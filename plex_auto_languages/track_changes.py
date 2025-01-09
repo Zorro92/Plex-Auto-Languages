@@ -73,26 +73,41 @@ class TrackChanges():
                      f"{self._reference.show()} and user '{self._username}' based on episode {self._reference}")
         self._changes = []
         for episode in episodes:
-            episode.reload()
-            for part in episode.iterParts():
-                current_audio_stream, current_subtitle_stream = self._get_selected_streams(part)
-                # Audio stream
-                matching_audio_stream = self._match_audio_stream(part.audioStreams())
-                if current_audio_stream is not None and matching_audio_stream is not None and \
-                        matching_audio_stream.id != current_audio_stream.id:
-                    self._changes.append((episode, part, AudioStream.STREAMTYPE, matching_audio_stream))
-                # Subtitle stream
-                matching_subtitle_stream = self._match_subtitle_stream(part.subtitleStreams())
-                if current_subtitle_stream is not None and matching_subtitle_stream is None:
-                    self._changes.append((episode, part, SubtitleStream.STREAMTYPE, None))
-                if matching_subtitle_stream is not None and \
-                        (current_subtitle_stream is None or matching_subtitle_stream.id != current_subtitle_stream.id):
-                    if current_audio_stream.title is not None and "commentary" in current_audio_stream.title.lower() and matching_audio_stream is None:
-                        # if the changed stream was commentary but this ep has none, then don't touch subs
-                        logger.debug(f"[Language Update] Skipping subtitle changes for "
-                         f"episode {self._reference} and user '{self.username}'")
-                    else:
-                        self._changes.append((episode, part, SubtitleStream.STREAMTYPE, matching_subtitle_stream))
+            try:
+                episode.reload()
+                for part in episode.iterParts():
+                    current_audio_stream, current_subtitle_stream = self._get_selected_streams(part)
+                    # Audio stream handling
+                    matching_audio_stream = self._match_audio_stream(part.audioStreams())
+                    if (current_audio_stream is not None and matching_audio_stream is not None and 
+                            matching_audio_stream.id != current_audio_stream.id):
+                        self._changes.append((episode, part, AudioStream.STREAMTYPE, matching_audio_stream))
+                    # Subtitle stream handling
+                    try:
+                        matching_subtitle_stream = self._match_subtitle_stream(part.subtitleStreams())
+                        # Handle subtitle removal
+                        if current_subtitle_stream is not None and matching_subtitle_stream is None:
+                            self._changes.append((episode, part, SubtitleStream.STREAMTYPE, None))
+                        # Handle subtitle changes
+                        if matching_subtitle_stream is not None:
+                            if current_subtitle_stream is None or matching_subtitle_stream.id != current_subtitle_stream.id:
+                                # Check for commentary audio
+                                if (current_audio_stream and 
+                                    getattr(current_audio_stream, 'title', '') and 
+                                    "commentary" in current_audio_stream.title.lower() and 
+                                    matching_audio_stream is None):
+                                    logger.debug(f"[Language Update] Skipping subtitle changes for "
+                                               f"episode {self._reference} and user '{self.username}' "
+                                               f"due to commentary track")
+                                else:
+                                    self._changes.append((episode, part, SubtitleStream.STREAMTYPE, matching_subtitle_stream))
+                    except Exception as e:
+                        logger.warning(f"Error matching subtitle stream for episode {episode}: {str(e)}")
+                        continue
+            except Exception as e:
+                logger.error(f"Error processing episode {episode}: {str(e)}")
+                continue
+
         self._update_description(episodes)
         self._computed = True
 
@@ -177,59 +192,63 @@ class TrackChanges():
         return streams[scores.index(max(scores))]
 
     def _match_subtitle_stream(self, subtitle_streams: List[SubtitleStream]):
-        # If no subtitle is selected, the reference stream can be 'None'
+        """
+        Match the most appropriate subtitle stream based on the reference stream.
+        Args:
+            subtitle_streams: List of available subtitle streams
+        Returns:
+            Best matching subtitle stream or None if no match found
+        """
+        # If no subtitle is selected, handle based on audio stream
         if self._subtitle_stream is None:
             if self._audio_stream is None:
                 return None
-            match_forced_only = True
-            match_hearing_impaired_only = False
+            # Try to find forced subtitles in the audio language
             language_code = self._audio_stream.languageCode
-        else:
-            match_forced_only = self._subtitle_stream.forced
-            match_hearing_impaired_only = self._subtitle_stream.hearingImpaired
-            language_code = self._subtitle_stream.languageCode
+            forced_streams = [s for s in subtitle_streams 
+                             if s.languageCode == language_code and s.forced]
+            return forced_streams[0] if forced_streams else None
 
-        # We only want streams with the same language code
+        # Get the reference properties
+        language_code = self._subtitle_stream.languageCode
+        ref_forced = getattr(self._subtitle_stream, 'forced', False)
+        ref_hearing_impaired = getattr(self._subtitle_stream, 'hearingImpaired', False)
+        ref_codec = getattr(self._subtitle_stream, 'codec', None)
+        ref_title = getattr(self._subtitle_stream, 'title', None)
+
+        # Filter streams by language
         streams = [s for s in subtitle_streams if s.languageCode == language_code]
-        if match_forced_only:
-            streams = [s for s in streams if s.forced]
-        if match_hearing_impaired_only:
-            streams = [s for s in streams if s.hearingImpaired]
-
-        if len(streams) == 0:
+        if not streams:
             return None
 
+        # If only one stream, return it
         if len(streams) == 1:
             return streams[0]
 
         # Score the remaining streams based on attributes
-        scores = [0] * len(streams)
-        for index, stream in enumerate(streams):
-            if self._subtitle_stream.forced == stream.forced:
-                scores[index] += 3
-            if self._subtitle_stream.hearingImpaired == stream.hearingImpaired:  # Add score for SDH subtitles
-                scores[index] += 3
-            if self._subtitle_stream.codec is not None and stream.codec is not None and \
-                    self._subtitle_stream.codec == stream.codec:
-                scores[index] += 1
-            if self._subtitle_stream.title is not None and stream.title is not None and \
-                    self._subtitle_stream.title == stream.title:
-                scores[index] += 5
-            # fix for badly labeled subs -> try break tied scores by ID match
-            # e.g. 0: eng, 1: eng (unflagged forced)
-            # todo this doesnt work, ids are not indexes, they're uids
-            # we'll need to map self's ids to indexes
-            # logger.debug(f"[Special] Checking subtitle IDs "
-            #              f"current {self._subtitle_stream.id} stream '{stream.id:}'")
-            # if self._subtitle_stream.title is not None and stream.title is not None and \
-            #         self._subtitle_stream.id == stream.id:
-            #     logger.debug(f"[Special] Matched subtitle IDs "
-            #              f"current {self._subtitle_stream.title} stream '{stream.title:}'")
-            #     scores[index] += 1
+        stream_scores = []
+        for stream in streams:
+            score = 0
+            # Basic attribute matching
+            if getattr(stream, 'forced', False) == ref_forced:
+                score += 3
+            if getattr(stream, 'hearingImpaired', False) == ref_hearing_impaired:
+                score += 3
+            # Codec matching (if available)
+            stream_codec = getattr(stream, 'codec', None)
+            if ref_codec and stream_codec and ref_codec == stream_codec:
+                score += 1
+            # Title matching (if available)
+            stream_title = getattr(stream, 'title', None)
+            if ref_title and stream_title and ref_title == stream_title:
+                score += 5
 
-        # Logging for debugging
-        logger.debug(f"Scores: {scores}, Streams: {streams}")
-        return streams[scores.index(max(scores))]
+            stream_scores.append((score, stream))
+
+        # Sort by score (highest first) and return the best match
+        stream_scores.sort(reverse=True, key=lambda x: x[0])
+        logger.debug(f"Subtitle stream scores: {[(score, getattr(stream, 'title', 'No title')) for score, stream in stream_scores]}")
+        return stream_scores[0][1] if stream_scores else None
 
     @staticmethod
     def _get_selected_streams(episode: Union[Episode, MediaPart]):
