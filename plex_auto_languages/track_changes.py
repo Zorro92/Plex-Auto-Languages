@@ -79,7 +79,7 @@ class TrackChanges():
                     current_audio_stream, current_subtitle_stream = self._get_selected_streams(part)
                     # Audio stream handling
                     matching_audio_stream = self._match_audio_stream(part.audioStreams())
-                    if (current_audio_stream is not None and matching_audio_stream is not None and 
+                    if (current_audio_stream is not None and matching_audio_stream is not None and
                             matching_audio_stream.id != current_audio_stream.id):
                         self._changes.append((episode, part, AudioStream.STREAMTYPE, matching_audio_stream))
                     # Subtitle stream handling
@@ -92,9 +92,9 @@ class TrackChanges():
                         if matching_subtitle_stream is not None:
                             if current_subtitle_stream is None or matching_subtitle_stream.id != current_subtitle_stream.id:
                                 # Check for commentary audio
-                                if (current_audio_stream and 
-                                    getattr(current_audio_stream, 'title', '') and 
-                                    "commentary" in current_audio_stream.title.lower() and 
+                                if (current_audio_stream and
+                                    getattr(current_audio_stream, 'title', '') and
+                                    "commentary" in current_audio_stream.title.lower() and
                                     matching_audio_stream is None):
                                     logger.debug(f"[Language Update] Skipping subtitle changes for "
                                                f"episode {self._reference} and user '{self.username}' "
@@ -205,7 +205,7 @@ class TrackChanges():
                 return None
             # Try to find forced subtitles in the audio language
             language_code = self._audio_stream.languageCode
-            forced_streams = [s for s in subtitle_streams 
+            forced_streams = [s for s in subtitle_streams
                              if s.languageCode == language_code and s.forced]
             return forced_streams[0] if forced_streams else None
 

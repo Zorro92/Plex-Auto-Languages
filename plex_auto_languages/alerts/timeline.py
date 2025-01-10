@@ -15,6 +15,7 @@ logger = get_logger()
 
 
 class PlexTimeline(PlexAlert):
+
     TYPE = "timeline"
 
     @property
